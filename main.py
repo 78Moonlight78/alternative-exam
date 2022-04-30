@@ -28,7 +28,7 @@ ADA_BOOST_ESTIMATORS = 110
 
 
 def descriptors(img):
-    #  меняем размер файла, тк на файлах с большим разрешением дескрипторы считаются дольше
+    # меняем размер файла, тк на файлах с большим разрешением дескрипторы считаются дольше
     if img.shape[1] > 1000:
         cf = 1000.0 / img.shape[1]
         newSize = (int(cf * img.shape[0]), int(cf * img.shape[1]), img.shape[2])
@@ -144,10 +144,9 @@ counts1 = csr_matrix(counts1)
 tfidf = _tfidf.transform(counts)
 tfidf1 = _tfidf1.transform(counts1)
 
-# определение весов каждого классификатора и предсказание
+# предсказание результата по классификатору с дескрипторами
 weights = clf.predict_log_proba(tfidf)
 weights1 = clf1.predict_log_proba(tfidf1)
-print(weights, '\nss\n', weights1)
 predictions = []
 figures = [i for i in samples.keys()]
 for i in weights:
