@@ -166,7 +166,7 @@ clf2.fit(tfidf3, classes)
 
 # обработка изображения
 
-# функция считывания изображения
+# функция открытия изображения
 def viewImage(image):
     cv2.namedWindow('Display', cv2.WINDOW_NORMAL)
     cv2.imshow('Display', image)
