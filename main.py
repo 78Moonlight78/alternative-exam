@@ -174,9 +174,9 @@ def viewImage(image):
     cv2.destroyAllWindows()
 
 # изначальное тестовое изображение, на котором будут рисоваться контуры
-iMg = cv2.imread('photo_2022-05-11_23-50-24.jpg')
+iMg = cv2.imread('your_photo.jpg')
 # то же самое вспомогательное изображение, которое будет подвергаться редактированию
-image = cv2.imread('photo_2022-05-11_23-50-24.jpg')
+image = cv2.imread('your_photo.jpg')
 
 # наложение фильтров на изображение
 hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -221,7 +221,7 @@ for i in range(len(contours)):
 # cмотрим найденные контуры
 for key, value in figures_coordinates.items():
     # создаем побочное изображение, идентичное прежнему, оттуда вырезаем кусочек по нынешнему контуру
-    im = Image.open('photo_2022-05-11_23-50-24.jpg')
+    im = Image.open('your_photo.jpg')
     im_crop = im.crop((value[0], value[1], value[2], value[3]))
     # сохраняем найденный кусочек в папочку test под соответствующим ему номером
     # (напомню, что все ключи в словаре также являются цифрами)
