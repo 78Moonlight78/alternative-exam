@@ -217,6 +217,9 @@ for i in range(len(contours)):
         j += 1
         # добавляем найденный контур к остальным
         figures_coordinates[figures_name] = (x - 15, y - 15, x + w + 15, y + h + 15)
+    # если контуров нашлось слишком много
+    if j == 100:
+        break
 
 # cмотрим найденные контуры
 for key, value in figures_coordinates.items():
