@@ -7,7 +7,7 @@ from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.ensemble import AdaBoostClassifier
 from sklearn.neighbors import KNeighborsClassifier
-from PIL import Image
+import matplotlib.pyplot as plt
 
 try:
     import cPickle as pickle
@@ -18,293 +18,331 @@ except ImportError:
     from urllib.request import urlopen
     from queue import Queue
 
-CLUSTER_SEED = 24
-CLUSTERS_NUMBER = 100
+# переменные, использующиеся для k-means
+CLUSTER_SEED = 50
+CLUSTERS_NUMBER = 110
+# переменные, использующаяся при бустинге
 BAYES_ALPHA = 0.1
-ADA_BOOST_ESTIMATORS = 110
-orient = 9
-cells_Per_Block = 2
-pixels_Per_Cell = 16
+ADA_BOOST_ESTIMATORS = 200
+# более подробно значение каждой переменной указано при ее использовании
 
-# находим дескрипторы
-def descriptors(img):
-    #  меняем размер файла, тк на файлах с большим разрешением дескрипторы считаются дольше
+'''
+---------------------------------------------------------------------------------------------------------------
+descriptors - Функция нахождения дескрипторов и гистограммы для классификатора.
+---------------------------------------------------------------------------------------------------------------
+Принимает: img - изображение в формате numpy-массива.
+---------------------------------------------------------------------------------------------------------------
+Возвращает: des_orb - массив дескрипторов, найденных с помощью ORB, 
+hist - массив точек гистограммы.
+---------------------------------------------------------------------------------------------------------------
+Параметры .ORB_create():
+nfeatures – максимальное число ключевых точек
+scaleFactor – множитель для пирамиды изображений, больше единицы. Значение 2 реализует классическую пирамиду.
+nlevels – число уровней в пирамиде изображений.
+edgeThreshold – число пикселов у границы изображения, где ключевые точки не детектируются.
+firstLevel – оставить нулём.
+WTA_K – число точек, которое требуется для одного элемента дескриптора. Если равно 2, 
+то сравнивается яркость двух случайно выбранных пикселов.
+scoreType – если 0, то в качестве меры особенности используется харрис, 
+иначе – мера FAST (на основе суммы модулей разностей яркостей в точках окружности).
+patchSize – размер окрестности, из которой выбираются случайные пикселы для сравнения.
+---------------------------------------------------------------------------------------------------------------
+'''
+
+
+def descriptors_and_hist(img):
+    #  меняем размер файла, т.к. на файлах большого размера дескрипторы считаются дольше.
     if img.shape[1] > 1000:
         cf = 1000.0 / img.shape[1]
-        newSize = (int(cf * img.shape[0]), int(cf * img.shape[1]), img.shape[2])
-        img.resize(newSize, refcheck=False)
-    # создание orb объекта
-    orb = cv2.ORB_create()
-    # нахождение ключевых точек и дескрипторов
-    kp, des = orb.detectAndCompute(img, None)
-    hist = getColorHist(img)
-    # код для проверки нахождения контрольных точек алгоритмом:
-    # img2 = cv2.drawKeypoints(img, kp, None, color=(0, 255, 0), flags=0)
-    # plt.imshow(img2, cmap='gray'), plt.title('ORB'), plt.axis('off')
-    # plt.show()
-    return des, hist
+        new_size = (int(cf * img.shape[0]), int(cf * img.shape[1]), img.shape[2])
+        img.resize(new_size, refcheck=False)
+    # создание ORB-объекта.
+    orb = cv2.ORB_create(nfeatures=490, scaleFactor=1.2, nlevels=4, edgeThreshold=31, firstLevel=0, WTA_K=2,
+                         scoreType=0, patchSize=31)
+    # нахождение ключевых точек и дескрипторов с помощью ORB.
+    kp, des_orb = orb.detectAndCompute(img, None)
+    # получение гистограммы
+    hist = get_hist(img)
+    # возвращаем кортеж найденных массивов дескрипторов.
+    return des_orb, hist
 
-# считываем цветовую гистограмму для второго классификатора
-def getColorHist(img):
+
+'''
+----------------------------------------------------------------------------------------------------------
+get_hog - Функция нахождения гистограммы изображения.
+----------------------------------------------------------------------------------------------------------
+Принимает: img - изображение в формате numpy-массива.
+----------------------------------------------------------------------------------------------------------
+Возвращает: hist - массив точек гистограммы.
+----------------------------------------------------------------------------------------------------------
+Параметры .calcHist():
+[hsv] - бинарное изображение в виде массива numpy
+[0] - список каналов, используемых для вычисления гистограмм (в нашем случае канал единственный - синий).
+None - дополнительная маска (8-битный массив) того же размера, что и входное изображение (отсутствует).
+[256] - размеры гистограммы в каждом измерении
+[0, 256] - массив границ гистограммы 
+----------------------------------------------------------------------------------------------------------
+'''
+
+
+def get_hist(img):
+    # изменяет цвета изображения под цветовую модель HSV, возвращает бинарное изображение
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    dist = cv2.calcHist([hsv], [0], None, [256], [0, 256])
-    return dist
+    hist = cv2.calcHist([hsv], [0], None, [256], [0, 256])
+    return hist
 
 
-def addDescriptors(totalDescriptors, sample):
-    for descriptor in sample[0]:
+'''
+---------------------------------------------------------------------------------------
+addDescriptors - Функция добавления найденных на изображении пар дескриптор+гистограмма
+в массив всех дескрипторов выборки.
+---------------------------------------------------------------------------------------
+Принимает: totalDescriptors - массив всех дескрипторов.
+des_image - кортеж из дескрипторов и гистограммы конкретного изображения.
+-----------------------------------------------------------------------------------------
+'''
+
+
+def addDescriptors(totalDescriptors, des_image):
+    for descriptor in des_image[0]:
         totalDescriptors.append(descriptor)
 
 
-def addNames(names, name, sample):
-    for _ in sample[0]:
+'''
+---------------------------------------------------------------------------
+addNames - Функция добавления в массив наименований классов названия класса 
+необходимое для соответствия массиву totalDescriptors количество раз.
+---------------------------------------------------------------------------
+Принимает: names - массив всех имен классов.
+name - имя класса, на изображении которого были найдены дескрипторы.
+des - массив найденных на изображении дескрипторов.
+---------------------------------------------------------------------------
+'''
+
+
+def addNames(names, name, des):
+    for _ in des[0]:
         names.append(name)
 
 
-def calculteCounts(samples, counts, counts1, counts2, clusters, clusters1, currentDescr, currentSample):
-    # проходимся по всем наборам для каждой пикчи: дескрипторы + цв. гист.
-    for s in samples:
-        # текущее количество повторений каждого дескриптора
-        currentCounts = {}
-        curva = {}
-        # смотрим дескрипторы для данной картинки
+'''
+-------------------------------------------------------------------------
+calculteCounts - Функция заполнения словарей, использующихся для создания
+разреженных матриц, в которых будет храниться информация 
+о встречаемости кластеров. 
+-------------------------------------------------------------------------
+Принимает: sample - массив дескрипторов изображения
+counts_orb, counts_hist, counts2 - встречаемость кластеров для каждого
+алгоритма (ORB, HOG, KNN соответственно).
+clusters, clusters_knn - кластеры ORB/HOG и KNN.
+currentDescr - количество просмотренных дескрипторов.
+currentSample - количество рассмотренных примеров.
+-------------------------------------------------------------------------
+'''
+
+
+def calculteCounts(sample, counts_orb, counts_hist, counts_knn, kmeans_clus, knn_clus, currentDescr, currentSample):
+    # просматриваем дескрипторы для каждого отдельного изображения в выборке
+    for s in sample:
+        # текущее количество повторений каждого дескриптора для алгоритмов k-means и knn в данном изображении
+        currentCounts_km = {}
+        currentCounts_knn = {}
+        # рассматриваем ORB-дескрипторы данного изображения
         for _ in s[0]:
-            # в словарик под ключом, обозначающим кластер определенного дескриптора
-            # прибавляем единичку, если такой дескриптор уже встречался.
-            # иначе просто добавляем в словарь информацию о наличии такого дескриптора
-            # грубо говоря, считаем количество кластеров каждого дескриптора
-            currentCounts[clusters[currentDescr]] = currentCounts.get(clusters[currentDescr], 0) + 1
-            curva[clusters1[currentDescr]] = curva.get(clusters1[currentDescr], 0) + 1
-            # увеличиваем количество дескрипторов, чтобы перейти к следующему дескриптору в массиве кластеров
+            # обновляем информацию в словарях о встречаемости дескриптора на изображении
+            currentCounts_km[kmeans_clus[currentDescr]] = currentCounts_km.get(kmeans_clus[currentDescr], 0) + 1
+            currentCounts_knn[knn_clus[currentDescr]] = currentCounts_knn.get(knn_clus[currentDescr], 0) + 1
+            # переходим к следующему дескриптору
             currentDescr += 1
         # рассматриваем пары вида "дескриптор: кол-во его повторений"
-        for clu, cnt in currentCounts.items():
-            # обновляем информацию внутри матриц о встречаемости каждого кластера
-            counts[currentSample, clu] = cnt
-        for i in range(len(curva)):
-            counts2[currentSample, i] = curva[list(curva.keys())[i]]
+        for clu, cnt in currentCounts_km.items():
+            # обновляем информацию внутри матрицы о встречаемости каждого дескриптора-ORB в рассматриваемом изображении
+            # для алгоритма k-means, а затем для алгоритма knn
+            counts_orb[currentSample, clu] = cnt
+        # в связи с тонкостями типов, принимаемых в дальнейшем иными методами, требуется преобразование
+        keys_knn = list(currentCounts_knn.keys())
+        for i in range(len(currentCounts_knn)):
+            counts_knn[currentSample, i] = currentCounts_knn[keys_knn[i]]
+        # заполняем матрицу гистограммы
         for i, histCnt in enumerate(s[1]):
-            # обновляется информация в каунтс1, добавляя туда только первый
-            # (т.е. там, где нет нулей, вроде) элемент гист.
-            counts1[currentSample, i] = histCnt[0]
+            counts_hist[currentSample, i] = histCnt[0]
             if i == 255:
                 break
-        # количество пройденных примеров + 1
+        # переходим к следующему изображению
         currentSample += 1
     # возвращаем количество встреченных дескрипторов и количество пройденных примеров
     return currentDescr, currentSample
 
 
+'''
+-----------------------------------------------------------------------
+Функция для чтения изображения + извлечения из него необходимых 
+дескрипторов и гистрограммы.
+-----------------------------------------------------------------------
+Принимает: directory - имя папки, в которой находится изображение.
+image - имя файла, содержащего необходимое изображение.
+-----------------------------------------------------------------------
+Возвращает: des - дескрипторы изображения.
+hist - гистограмма изображения
+-----------------------------------------------------------------------
+'''
+
+
 def LoadSamples(directory, image):
     img = cv2.imread(directory + image)
-    des, hist = descriptors(img)
+    des, hist = descriptors_and_hist(img)
     return des, hist
 
-# загрузка обучающей выборки и нахождение дескрипторов
-# положительные и отрицательные примеры
 
+# обучающая выборка
+# массив, содержащий кортежи дескрипторов и гистограмм всех изображений выборки
 totalDescriptors = []
+# массив, в который заносится имя класса каждого подаваемого на вход изображения
 names = []
+# словарь, содержащий пары "класс изображения: дескрипторы и гистограмма изображения"
 samples = {}
-directory = 'images/'
+directory = 'train/'
+# общее число изображений в тренировочной выборке
+totalSamplesNumber = 0
+# рассматриваем все изображения внутри папки
 for image in os.listdir(directory):
-    s = LoadSamples(directory, image)
+    # загружаем изображение и получаем его дескрипторы и гистограмму
+    des_image = LoadSamples(directory, image)
+    # класс изображения - имя файла до символа 'решетка'
     name = os.path.basename(directory + image)
     name = name[:name.index('#')]
-    # тк у нас все еще попадаются ломаные кортинки, создаем такой условный оператор
-    if s != None:
-        if samples.get(name, 0) != 0:
-            samples[name].append(s)
-        else:
-            samples[name] = [s]
-        addNames(names, name, s)
-        addDescriptors(totalDescriptors, s)
+    # в случае, если класс изображения уже есть в общем словаре, добавляем к нему только что найденные дескрипторы
+    # иначе - под ключом имени класса создаем массив, содержащий пока только новые дескрипторы.
+    if samples.get(name, 0) != 0:
+        samples[name].append(des_image)
     else:
-        print("ERROR ON", image)
+        samples[name] = [des_image]
+    # добавляем в массив наименований классов класс нового изображения,
+    # а в массив всех дескрипторов - только что найденные дескрипторы и гистограмму
+    addNames(names, name, des_image)
+    addDescriptors(totalDescriptors, des_image)
+    totalSamplesNumber += 1
 #  создание всех необходимых классификаторов
 #  kmeans — для кластеризации
 #  TfidfTransformer, MultinomialBN, AdaBoostClassifier — для классификации
+#  параметры MiniBatchKMeans():
+#  n_clusters- Количество кластеров для формирования, а также количество центроидов для генерации
+#  random_state - Определяет генерацию случайных чисел для инициализации центроида и случайного переназначения
+#  verbose - Режим детализации
 kmeans = MiniBatchKMeans(n_clusters=CLUSTERS_NUMBER, random_state=CLUSTER_SEED, verbose=True)
-_tfidf = TfidfTransformer()
-_tfidf1 = TfidfTransformer()
-_tfidf2 = TfidfTransformer()
-clf = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
-clf1 = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
-clf2 = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
-model = KNeighborsClassifier(n_neighbors=100)
-#  обучение модели
+#  Мера tf-idf: вес некоторого дескриптора пропорционален количеству его употребления в изображении,
+#  и обратно пропорционален частоте его употребления в других документах изображениях.
+_tfidf_orb = TfidfTransformer()
+_tfidf_hist = TfidfTransformer()
+_tfidf_knn = TfidfTransformer()
+#  alpha - Параметр аддитивного (Лапласа/Лидстоуна) сглаживания
+#  n_estimators - Максимальное количество оценок, при котором бустинг прекращается.
+#  В случае идеальной подгонки процедура обучения останавливается досрочно.
+clf_orb = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
+clf_hist = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
+clf_knn = AdaBoostClassifier(MultinomialNB(alpha=BAYES_ALPHA), n_estimators=ADA_BOOST_ESTIMATORS)
+#  n_neighbors - Количество "соседей"
+knn = KNeighborsClassifier(n_neighbors=350)
+# обучение моделей
 kmeans.fit(totalDescriptors)
-model.fit(totalDescriptors, names)
-# список кластеров с соответствием дескрипторам
-clusters = kmeans.predict(totalDescriptors)
-clusters = numpy.array(clusters)
-totalSamplesNumber = len(samples)
-# создание двух матриц, подсчет частоты встречаемости
-# сколько раз встретились дескрипторы из каждого кластера для каждой картинки
-counts = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
-# сколько раз встретился каждый цвет для каждой картинки
-counts1 = lil_matrix((totalSamplesNumber, 256))
-counts2 = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
+knn.fit(totalDescriptors, names)
+# преобразование дескрипторов в кластеры посредством функции предсказания
+# (в дальнейшем, для удобства, будем продолжать называть их дескрипторы)
+kmeans_clus = numpy.array(kmeans.predict(totalDescriptors))
+knn_clus = knn.predict(totalDescriptors)
+# создание заготовок трех разреженных матриц
+# матрицы, содержащие информацию о повторении дескрипторов-ORB для каждой фотографии
+counts_orb = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
+counts_knn = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
+# матрица, содержащая информацию о повторении цветов на изображениях
+counts_hist = lil_matrix((totalSamplesNumber, 256))
+# переменные, необходимые для перебора всех примеров и дескрипторов
 currentDescr = 0
 currentSample = 0
 for i in samples.values():
-    currentDescr, currentSample = calculteCounts(i,  counts, counts1, counts2, clusters, names, currentDescr, currentSample)
-counts = csr_matrix(counts)
-counts1 = csr_matrix(counts1)
-counts2 = csr_matrix(counts2)
-# преобразование матриц
-tfidf = _tfidf.fit_transform(counts)
-tfidf1 = _tfidf1.fit_transform(counts1)
-tfidf3 = _tfidf2.fit_transform(counts2)
+    currentDescr, currentSample = calculteCounts(i,  counts_orb, counts_hist, counts_knn,
+                                                 kmeans_clus, knn_clus, currentDescr, currentSample)
+# приведение разреженных матриц к удобному для работы виду
+counts_orb = csr_matrix(counts_orb)
+counts_hist = csr_matrix(counts_hist)
+counts_knn = csr_matrix(counts_knn)
+# преобразование матриц для обучения классификатора
+tfidf_orb = _tfidf_orb.fit_transform(counts_orb)
+tfidf_hist = _tfidf_hist.fit_transform(counts_hist)
+tfidf_knn = _tfidf_knn.fit_transform(counts_knn)
+# создание массива классов, где имя класса повторяется столько раз, сколько класс встречается в обучающей выборке
 classes = []
 for key, value in samples.items():
     classes += [key] * len(value)
 # обучение байесовского классификатора
-clf.fit(tfidf, classes)
-clf1.fit(tfidf1, classes)
-clf2.fit(tfidf3, classes)
-
-# обработка изображения
-
-# функция открытия изображения
-def viewImage(image):
-    cv2.namedWindow('Display', cv2.WINDOW_NORMAL)
-    cv2.imshow('Display', image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-# изначальное тестовое изображение, на котором будут рисоваться контуры
-iMg = cv2.imread('your_photo.jpg')
-# то же самое вспомогательное изображение, которое будет подвергаться редактированию
-image = cv2.imread('your_photo.jpg')
-
-# наложение фильтров на изображение
-hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-low = numpy.array((59, 119, 17), numpy.uint8)
-high = numpy.array((79, 255, 255), numpy.uint8)
-curr_mask = cv2.inRange(hsv_img, low, high)
-hsv_img[curr_mask > 0] = ([75, 255, 200])
-
-hsv_img = 255 - hsv_img  # neg = (L-1) - img
-
-RGB_again = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2RGB)
-gray = cv2.cvtColor(RGB_again, cv2.COLOR_RGB2GRAY)
-
-gray = cv2.GaussianBlur(gray, (3, 3), 0)
-gray = cv2.bilateralFilter(gray,9,75,75)
-
-ret, threshold = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY)
-
-# находим и рисуем координаты контуров на основе отредактированного изображения
-contours, hierarchy = cv2.findContours(threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-cv2.drawContours(image, contours, -1, (0, 0, 255), 3)
-
-# словарь координат фигур
-figures_coordinates = {}
-# временные названия контуров
-k = [str(j) for j in range(100)]
-j = 0
-# проходимся по координатам всех найденных контуров
-for i in range(len(contours)):
-    # вписываем координаты найденной фигуры в прямоугольник
-    x, y, w, h = cv2.boundingRect(contours[i])
-    # проверка на случай, если нашлись какие-то побочные, мелкие контуры
-    if w > 20 and h > 30:
-        # вырезаем фигуру по координатам
-        img_crop = image[y - 15:y + h + 15, x - 15:x + w + 15]
-        figures_name = k[j]
-        j += 1
-        # добавляем найденный контур к остальным
-        figures_coordinates[figures_name] = (x - 15, y - 15, x + w + 15, y + h + 15)
-    # если контуров нашлось слишком много
-    if j == 100:
-        break
-
-# cмотрим найденные контуры
-for key, value in figures_coordinates.items():
-    # создаем побочное изображение, идентичное прежнему, оттуда вырезаем кусочек по нынешнему контуру
-    im = Image.open('your_photo.jpg')
-    im_crop = im.crop((value[0], value[1], value[2], value[3]))
-    # сохраняем найденный кусочек в папочку test под соответствующим ему номером
-    # (напомню, что все ключи в словаре также являются цифрами)
-    im_crop.save(f'test/{key}.jpg', quality=95)
-    # im_crop.show()
+clf_orb.fit(tfidf_orb, classes)
+clf_hist.fit(tfidf_hist, classes)
+clf_knn.fit(tfidf_knn, classes)
 
 # тестовая выборка для предсказаний
 # действия, аналогичные обучению модели
-# считываем ранее найденные куски изображений.
-# предполагается, что именно них изображены нужные предметы
 directory = 'test/'
-samples1 = []
+samples_test = []
 names = []
 totalDescriptors = []
+images_test = []
 for image in os.listdir(directory):
-    names.append(image[:image.index('.')])
+    images_test.append(cv2.imread(directory + image))
+    name = os.path.basename(directory + image)
+    names.append(name[:name.index('#')])
     s = LoadSamples(directory, image)
-    samples1.append(s)
+    samples_test.append(s)
     addDescriptors(totalDescriptors, s)
-clusters = kmeans.predict(totalDescriptors)
-clusters1 = model.predict(totalDescriptors)
-counts = lil_matrix((len(samples1), CLUSTERS_NUMBER))
-counts1 = lil_matrix((len(samples1), 256))
-counts2 = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
+kmeans_clus = kmeans.predict(totalDescriptors)
+clusters_knn = knn.predict(totalDescriptors)
+counts_orb = lil_matrix((len(samples_test), CLUSTERS_NUMBER))
+counts_hist = lil_matrix((len(samples_test), 256))
+counts_knn = lil_matrix((totalSamplesNumber, CLUSTERS_NUMBER))
 currentDescr = 0
 currentSample = 0
-currentDescr, currentSample = calculteCounts(samples1,  counts, counts1, counts2, clusters, clusters1, currentDescr, currentSample)
-counts = csr_matrix(counts)
-counts1 = csr_matrix(counts1)
-counts2 = csr_matrix(counts2)
-tfidf = _tfidf.transform(counts)
-tfidf1 = _tfidf1.transform(counts1)
-tfidf2 = _tfidf2.fit_transform(counts2)
+currentDescr, currentSample = calculteCounts(samples_test,  counts_orb, counts_hist, counts_knn,
+                                             kmeans_clus, clusters_knn, currentDescr, currentSample)
+counts_orb = csr_matrix(counts_orb)
+counts_hist = csr_matrix(counts_hist)
+counts_knn = csr_matrix(counts_knn)
+tfidf_kmeans = _tfidf_orb.transform(counts_orb)
+tfidf_hist = _tfidf_hist.transform(counts_hist)
+tfidf_knn = _tfidf_knn.fit_transform(counts_knn)
 # определение весов каждого классификатора и предсказание
-weights = clf.predict_log_proba(tfidf)
-weights1 = clf1.predict_log_proba(tfidf1)
-weights2 = clf2.predict_log_proba(tfidf2)
+weights_kmeans = clf_orb.predict_log_proba(tfidf_kmeans)
+weights_hist = clf_hist.predict_log_proba(tfidf_hist)
+weights_knn = clf_knn.predict_log_proba(tfidf_knn)
+# массив, содержащий предсказание модели, относительно поданных на вход изображений
 predictions = []
-figures = [i for i in samples.keys()]
-figures1 = [j for j in samples.keys()]
-figures2 = [k for k in samples.keys()]
-for i in range(len(weights)):
-    f = 0
-    index_i, max_value_i = max(enumerate(weights[i]), key=lambda i_v: i_v[1])
-    index_j, max_value_j = max(enumerate(weights1[i]), key=lambda i_v: i_v[1])
-    index_k, max_value_k = max(enumerate(weights2[i]), key=lambda i_v: i_v[1])
-    indx = []
-    indx.append(index_i)
-    indx.append(index_j)
-    indx.append(index_k)
-    count = indx.count(index_i)
-    count1 = indx.count(index_j)
-    count2 = indx.count(index_k)
-    counts = []
-    counts.append(count)
-    counts.append(count1)
-    counts.append(count2)
-    if max(counts) == count:
-        predictions.append(figures[index_i])
-    elif max(counts) == count1:
-        predictions.append(figures1[index_j])
+# массив названий классов для предсказания
+predict_classes = [i for i in samples.keys()]
+# рассматриваем предсказания каждого классификатора по каждому изображению
+for i in range(len(weights_kmeans)):
+    # ищем индексы наибольших элементов в последовательностях предсказанных весов классификаторов
+    index_i, max_value_i = max(enumerate(weights_kmeans[i]), key=lambda i_v: i_v[1])
+    index_j, max_value_j = max(enumerate(weights_hist[i]), key=lambda i_v: i_v[1])
+    index_k, max_value_k = max(enumerate(weights_knn[i]), key=lambda i_v: i_v[1])
+    # составляем список индексов
+    indx = [index_i, index_j, index_k]
+    # считаем преобладающий номер позиции наибольшего из весов у каждого классификатора
+    count_i = indx.count(index_i)
+    count_j = indx.count(index_j)
+    count_k = indx.count(index_k)
+    counts = [count_i, count_j, count_k]
+    # рассматриваем, какой из индексов встречается чаще всего среди предсказаний трех классификаторов,
+    # класс под таким индексом в словаре и является предсказанием ансамбля
+    # условные операторы расположены по приоритетности классификаторов
+    if max(counts) == count_j:
+        predictions.append(predict_classes[index_j])
+    elif max(counts) == count_i:
+        predictions.append(predict_classes[index_i])
     else:
-        predictions.append(figures2[index_k])
+        predictions.append(predict_classes[index_k])
 
-# переносим ранее найденные контуры в новый словарь, теперь уже ключами являются предсказанные моделью названия классов.
-# тк предсказание происходит согласно тому порядку, который заявлен в папке, а все изображения у нас названы
-# порядковыми номерами, то несложно догадаться, что, например, первому изображению соответствует первое предсказание
-j = 0
-res = {}
-for key, values in figures_coordinates.items():
-    res[predictions[j]] = values
-    j += 1
-
-# картинка, которая будет выводиться
-img_ = cv2.imread('photo_2022-05-11_23-50-24.jpg')
-for key, value in res.items():
-    # наносим на изначальное, не обработанное изображение контур в виде прямоугольника
-    rec = cv2.rectangle(img_, (value[0], value[1]), (value[2], value[3]), (255, 255, 0), 2)
-    # подписываем этот контур согласно ключу в словаре (предсказанному ему классу)
-    cv2.putText(rec, key, (value[0], value[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (36, 255, 12), 1)
-
-# выводим результат
-viewImage(img_)
+if input("\n\nВывести каждое изображение с предсказанным моделью классом (y/n): ") == 'y':
+    # вывод изображений тестовой выборки под заголовком с названием предсказанного класса
+    for i in range(len(names)):
+        plt.imshow(images_test[i]), plt.title(predictions[i]), plt.axis('off')
+        plt.show()
+print(f"\nИтоговый процент правильно предсказанных классов на {len(predictions)} изображений: "
+      f"{100 * len([i for i in range(len(predictions)) if predictions[i] == names[i]]) / len(predictions)}%")
