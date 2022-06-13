@@ -274,7 +274,7 @@ tfidf_knn = _tfidf_knn.fit_transform(counts_knn)
 classes = []
 for key, value in samples.items():
     classes += [key] * len(value)
-# обучение байесовского классификатора
+
 clf_orb.fit(tfidf_orb, classes)
 clf_hist.fit(tfidf_hist, classes)
 clf_knn.fit(tfidf_knn, classes)
